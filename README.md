@@ -134,6 +134,6 @@
 ---
 
 ## 📦 ลิงก์สำหรับส่งงาน (Submission Deliverables)
-* **Address Contract:** `[กรอก Address หลัง Deploy บน Remix]`
+* **Address Contract:** `0x4D0DB17F0439A6F72321f0f969108d74880c33ad`
 * **URL GitHub Repository:** https://github.com/IbankXD/csi301-smartproperty-rental
 * **URL GitHub Pages:** https://ibankxd.github.io/csi301-smartproperty-rental/
