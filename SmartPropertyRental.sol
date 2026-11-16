@@ -13,13 +13,13 @@ contract SmartPropertyRental {
     // =========================================================================
 
     enum AgreementStatus {
-        Created,            // สร้างสัญญาแล้ว รอคู่สัญญายืนยัน
-        Confirmed,          // ยืนยันครบทั้ง 2 ฝ่ายแล้ว รอผู้เช่าฝากเงินประกัน
-        Active,             // วางเงินประกันแล้ว สัญญามีผลสมบูรณ์
-        InspectionPending,  // สิ้นสุดสัญญา/ขอตรวจห้อง เจ้าของยื่นเสนอหักเงินประกัน รอผู้เช่าตอบรับ
-        Disputed,           // ผู้เช่าคัดค้านการหักเงินประกัน ส่งต่อให้ Arbitrator ชี้ขาด
-        Completed,          // คืน/จัดสรรเงินประกันเรียบร้อย สิ้นสุดสัญญาอย่างสมบูรณ์
-        Cancelled           // ยกเลิกสัญญาก่อนเริ่มใช้งาน
+        Created,            // 0: สร้างสัญญาแล้ว รอคู่สัญญายืนยัน
+        Confirmed,          // 1: ยืนยันครบทั้ง 2 ฝ่ายแล้ว รอผู้เช่าฝากเงินประกัน
+        Active,             // 2: วางเงินประกันแล้ว สัญญามีผลสมบูรณ์
+        InspectionPending,  // 3: สิ้นสุดสัญญา/ขอตรวจห้อง เจ้าของยื่นเสนอหักเงินประกัน รอผู้เช่าตอบรับ
+        Disputed,           // 4: ผู้เช่าคัดค้านการหักเงินประกัน ส่งต่อให้ Arbitrator ชี้ขาด
+        Completed,          // 5: คืน/จัดสรรเงินประกันเรียบร้อย สิ้นสุดสัญญาอย่างสมบูรณ์
+        Cancelled           // 6: ยกเลิกสัญญาก่อนเริ่มใช้งาน
     }
 
     struct Property {
@@ -33,6 +33,7 @@ contract SmartPropertyRental {
         bool exists;
     }
 
+    // แยกข้อมูลสัญญาหลักไม่ให้เกินขีดจำกัดของ EVM Stack (Stack too deep)
     struct RentalAgreement {
         uint256 id;
         uint256 propertyId;
@@ -47,14 +48,16 @@ contract SmartPropertyRental {
         bool landlordConfirmed;    // เจ้าของห้องยืนยันด้วย Wallet
         bool tenantConfirmed;      // ผู้เช่ายืนยันด้วย Wallet
         AgreementStatus status;
-        
-        // การตรวจสภาพห้อง & ข้อพิพาท
+        bool exists;
+    }
+
+    // ข้อมูลการตรวจสภาพห้อง & ข้อพิพาท
+    struct InspectionData {
         uint256 proposedDeduction; // ยอดหักเงินประกันที่เจ้าของเสนอ
         string deductionReason;    // เหตุผลการหักเงินประกัน
         string inspectionEvidence; // หลักฐานความเสียหาย (รูปภาพ/เอกสาร)
         string tenantDisputeReason;// เหตุผลที่ผู้เช่าคัดค้าน
         string arbitratorRuling;   // คำตัดสินของคนกลาง (Arbitrator)
-        bool exists;
     }
 
     struct RentalPayment {
@@ -75,7 +78,8 @@ contract SmartPropertyRental {
     uint256 public nextAgreementId;
 
     mapping(uint256 => Property) public properties;
-    mapping(uint256 => RentalAgreement) public agreements;
+    mapping(uint256 => RentalAgreement) private agreements;
+    mapping(uint256 => InspectionData) public inspections;
     mapping(uint256 => RentalPayment[]) private paymentHistories;
 
     // ระบบ Reentrancy Guard
@@ -247,27 +251,21 @@ contract SmartPropertyRental {
         require(_endDate > _startDate, "INVALID_DATE_RANGE");
 
         uint256 agreementId = nextAgreementId++;
-        agreements[agreementId] = RentalAgreement({
-            id: agreementId,
-            propertyId: _propertyId,
-            landlord: payable(msg.sender),
-            tenant: payable(_tenant),
-            startDate: _startDate,
-            endDate: _endDate,
-            rentPerPeriod: prop.rentPerPeriod,
-            depositAmount: prop.securityDeposit,
-            depositBalance: 0,
-            termsURI: _termsURI,
-            landlordConfirmed: true, // เจ้าของห้องเป็นผู้สร้าง ถือว่ายืนยันทันที
-            tenantConfirmed: false,
-            status: AgreementStatus.Created,
-            proposedDeduction: 0,
-            deductionReason: "",
-            inspectionEvidence: "",
-            tenantDisputeReason: "",
-            arbitratorRuling: "",
-            exists: true
-        });
+        RentalAgreement storage ag = agreements[agreementId];
+        ag.id = agreementId;
+        ag.propertyId = _propertyId;
+        ag.landlord = payable(msg.sender);
+        ag.tenant = payable(_tenant);
+        ag.startDate = _startDate;
+        ag.endDate = _endDate;
+        ag.rentPerPeriod = prop.rentPerPeriod;
+        ag.depositAmount = prop.securityDeposit;
+        ag.depositBalance = 0;
+        ag.termsURI = _termsURI;
+        ag.landlordConfirmed = true; // เจ้าของห้องเป็นผู้สร้าง ถือว่ายืนยันทันที
+        ag.tenantConfirmed = false;
+        ag.status = AgreementStatus.Created;
+        ag.exists = true;
 
         emit AgreementCreated(
             agreementId,
@@ -377,9 +375,10 @@ contract SmartPropertyRental {
             require(bytes(_deductionReason).length > 0, "REASON_REQUIRED_FOR_DEDUCTION");
         }
 
-        ag.proposedDeduction = _deductionAmount;
-        ag.deductionReason = _deductionReason;
-        ag.inspectionEvidence = _evidence;
+        InspectionData storage insp = inspections[_agreementId];
+        insp.proposedDeduction = _deductionAmount;
+        insp.deductionReason = _deductionReason;
+        insp.inspectionEvidence = _evidence;
 
         // หากไม่มีการหักเงินเลย (สภาพห้องสมบูรณ์ 100%) คืนเงินประกันผู้เช่าทันที
         if (_deductionAmount == 0) {
@@ -406,7 +405,7 @@ contract SmartPropertyRental {
         require(ag.status == AgreementStatus.InspectionPending, "NOT_IN_INSPECTION_PENDING");
         require(msg.sender == ag.tenant, "ONLY_TENANT");
 
-        uint256 deduction = ag.proposedDeduction;
+        uint256 deduction = inspections[_agreementId].proposedDeduction;
         uint256 refund = ag.depositBalance - deduction;
 
         ag.depositBalance = 0;
@@ -436,7 +435,7 @@ contract SmartPropertyRental {
         require(msg.sender == ag.tenant, "ONLY_TENANT");
         require(bytes(_disputeReason).length > 0, "DISPUTE_REASON_REQUIRED");
 
-        ag.tenantDisputeReason = _disputeReason;
+        inspections[_agreementId].tenantDisputeReason = _disputeReason;
         ag.status = AgreementStatus.Disputed;
 
         emit DisputeRaised(_agreementId, msg.sender, _disputeReason);
@@ -457,7 +456,7 @@ contract SmartPropertyRental {
         // กฎทางธุรกิจสำคัญ: ยอดรวมต้องเท่ากับเงินประกันคงเหลือพอดี และไม่สามารถคืนเงินเกินยอดคงเหลือได้
         require(_payToLandlord + _refundToTenant == ag.depositBalance, "TOTAL_MUST_EQUAL_DEPOSIT_BALANCE");
 
-        ag.arbitratorRuling = _rulingNotes;
+        inspections[_agreementId].arbitratorRuling = _rulingNotes;
         ag.depositBalance = 0;
         ag.status = AgreementStatus.Completed;
         properties[ag.propertyId].isAvailable = true;
@@ -495,6 +494,10 @@ contract SmartPropertyRental {
 
     function getAgreement(uint256 _agreementId) external view returns (RentalAgreement memory) {
         return agreements[_agreementId];
+    }
+
+    function getInspection(uint256 _agreementId) external view returns (InspectionData memory) {
+        return inspections[_agreementId];
     }
 
     function totalProperties() external view returns (uint256) {
